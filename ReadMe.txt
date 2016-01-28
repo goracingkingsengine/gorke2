@@ -13,6 +13,6 @@ to obtain the executable:
 
 5) open a console window and at the command prompt issue the command:
 
-   go get github.com/goracingkingsengine/gorke
+   go get github.com/goracingkingsengine/gorke2
    
 6) the executable will be in the 'bin' directory of your workspace
