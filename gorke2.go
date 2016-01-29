@@ -2112,12 +2112,12 @@ func (g *TGame) RandomSearch() {
 	Depth=1
 	StartTimer()
 
-	g.B.EvalNode(2)
+	g.B.EvalNode(0)
 
 	// add some random nodes to tree
 	for (Depth<=SearchDepth) && (!AbortSearch) {
-		for k:=0; (k<10) && (!AbortSearch); k++ {
-			for i:=0; (i<(2<<uint(Depth))) && (!AbortSearch); i++ {
+		for k:=0; (k<(2<<uint(Depth))) && (!AbortSearch); k++ {
+			for i:=0; (i<5) && (!AbortSearch); i++ {
 				g.AddNode(Depth)
 			}
 
