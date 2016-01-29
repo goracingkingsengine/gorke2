@@ -308,18 +308,8 @@ var BestMoveAlgeb=""
 // Init : initialization
 
 func Init() {
-	if TEST {
-		fmt.Printf("------------------------\ninitialization\n------------------------\n")
-	}
 	InitMoveTable()
 	G.SetFromFen(START_FEN)
-	if TEST {
-		fmt.Printf("------------------------\n")
-		fmt.Printf("game initialized\n")
-		G.Print()
-		fmt.Printf("------------------------\n")
-		fmt.Printf("application started\n------------------------\n")
-	}
 }
 
 ///////////////////////////////////////////////
@@ -395,10 +385,6 @@ func InitMoveTable() {
 			MoveTable[ptr].EndPiece=true
 			ptr++
 		}
-	}
-
-	if TEST {
-		fmt.Printf("move table initialized, entries %d\n",ptr)
 	}
 }
 
@@ -899,6 +885,10 @@ func (b TBoard) AlphaBeta(max_depth int) int {
 		// store returned chunk evals in the node
 		for i:=basei; i<=lasti; i++ {
 			eval:=-AlphaBetaEvals[i]
+			// update BaseAlpha
+			if eval>BaseAlpha {
+				BaseAlpha=eval
+			}
 			node.Moves[i].Eval=eval
 		}
 		// to to next chunk
