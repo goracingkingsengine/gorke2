@@ -30,8 +30,8 @@ import (
 
 ///////////////////////////////////////////////
 
-//const TEST=true
-const TEST=false
+const TEST=true
+//const TEST=false
 
 ///////////////////////////////////////////////
 // types
@@ -230,6 +230,8 @@ var Scanner scanner.Scanner
 var Commandline string
 // token read from commandline
 var Token string
+// int parsed from Token
+var I int
 // reader to read from stdin
 var Reader = bufio.NewReader(os.Stdin)
 // command read from command line
@@ -254,12 +256,17 @@ var BestMoves=make(map[TPosition]TMove)
 // nodes
 var Nodes=make(map[TPosition]TNode)
 
+// base alpha
+var BaseAlpha=-INFINITE_SCORE
 // alphabeta evals
 var AlphaBetaEvals [MAX_MULTIPV]int
 // alphabeta moves
 var AlphaBetaMoves [MAX_MULTIPV]TMove
 // num alphabeta moves
 var NumAlphaBetaMoves=0
+
+// number of threads used in alphabeta search
+var NumThreads=MAX_MULTIPV
 
 // abort search
 var AbortSearch=false
@@ -695,7 +702,7 @@ func (sq TSquare) ToAlgeb() string {
 func (b TBoard) CollectAlphaBetaPv(max_depth int) string {
 	dummy:=b
 	buff:=""
-	for depth:=max_depth+1; depth>0; depth-- {
+	for depth:=0; depth<max_depth; depth++ {
 		move,found:=BestMoves[dummy.Pos]
 		if !found {
 			return buff
@@ -721,17 +728,21 @@ func (b TBoard) TerminalEval() int {
 	bb:=b.BlackKingOnBaseRank()
 
 	if wb && bb {
+		// both kings on base rank is draw
 		return DRAW_SCORE
 	}
 
 	if bb {
+		// if black king is on base rank it is white's turn
 		return -MATE_SCORE
 	}
 
 	if wb {
+		// if white king is on base rank it is black's turn
 		return -MATE_SCORE
 	}
 
+	// no king on base rank without legal moves is stalemate
 	return DRAW_SCORE
 }
 
@@ -766,9 +777,9 @@ func AlphaBetaRecursive(b TBoard,storei int,depth int, max_depth int, alpha int,
 			eval-=realdepth
 		}
 		if depth==0 {
-			AlphaBetaEvals[storei]=-eval
+			AlphaBetaEvals[storei]=eval
 		}
-		return -eval
+		return eval
 	}
 	if depth>=max_depth {
 		eval:=b.Eval()
@@ -777,36 +788,47 @@ func AlphaBetaRecursive(b TBoard,storei int,depth int, max_depth int, alpha int,
 		}
 		return eval
 	}
+	currentbest:=-INFINITE_SCORE
 	for haslegal {
 		m:=b.CurrentMove
 		b.MakeMove(m)
-		eval:=AlphaBetaRecursive(b,-1,depth+1,max_depth,-beta,-alpha)
+		eval:=-AlphaBetaRecursive(b,-1,depth+1,max_depth,-beta,-alpha)
 		b.UnMakeMove(m)
 		// test whether this is new best move
-		if eval>alpha {
-			// new best move
-			alpha=eval
-			// store move in cache
+		if eval>currentbest {
+			// new best move found
+			// make this eval the current best
+			currentbest=eval
+			// set move's eval
 			m.Eval=eval
+			// store as best move
 			// multithreaded, so setting common resource BestMoves requires lock
 			mutex.Lock()
 			BestMoves[b.Pos]=m
 			mutex.Unlock()
-			// test whether it is a cut
-			if alpha>beta {
-				// cut
-				if depth==0 {
-					AlphaBetaEvals[storei]=-alpha
-				}
-				return -alpha
+		}
+		// update alpha
+		if eval>alpha {
+			alpha=eval
+		}
+		// test whether it is a cut
+		effectivebeta:=beta
+		if depth==0 {
+			effectivebeta=-BaseAlpha
+		}
+		if alpha>effectivebeta {
+			// cut
+			if depth==0 {
+				AlphaBetaEvals[storei]=alpha
 			}
+			return alpha
 		}
 		haslegal=b.NextLegalMove()
 	}
 	if depth==0 {
-		AlphaBetaEvals[storei]=-alpha
+		AlphaBetaEvals[storei]=alpha
 	}
-	return -alpha
+	return alpha
 }
 
 ///////////////////////////////////////////////
@@ -818,84 +840,118 @@ func AlphaBetaRecursive(b TBoard,storei int,depth int, max_depth int, alpha int,
 // <- int : eval
 
 func (b TBoard) AlphaBeta(max_depth int) int {
+	// get node for board
 	node:=b.Node()
+	// determine number of legal moves
 	l:=len(node.Moves)
 	NumAlphaBetaMoves=l
+	// if none, return terminal eval
 	if l<=0 {
 		return b.TerminalEval()
 	}
-	for i:=0 ; i<l; i++ {
+	// start with INVALID_SCORE for all moves to signal that evaluation has not arrived yet
+	for i:=0; i<=l; i++ {
 		AlphaBetaEvals[i]=INVALID_SCORE
-		AlphaBetaMoves[i]=node.Moves[i]
 	}
-	b.BaseDepth++
-	for i,m := range node.Moves {
-		b.MakeMove(m)
-		go AlphaBetaRecursive(b,i,0, max_depth-1, -INFINITE_SCORE, INFINITE_SCORE)
-		b.UnMakeMove(m)
-	}
-	b.BaseDepth--
-	ready:=false
-	for (!ready) && (!AbortSearch) {
-		ready=true
-		for i:=0; i<l; i++ {
-			if AlphaBetaEvals[i]==INVALID_SCORE {
-				ready=false
+	// base for current chunk of moves
+	BaseAlpha=-INFINITE_SCORE
+	basei:=0
+	for basei<l {
+		// determine last index of chunk
+		lasti:=basei+NumThreads-1
+		if lasti>=l {
+			lasti=l-1
+		}
+		// increase base depth of board
+		b.BaseDepth++
+		// make moves one by one in the chunk and start alphabetarecursive in separate thread for each resulting position
+		for i:=basei; i<=lasti; i++ {
+			m:=node.Moves[i]
+			b.MakeMove(m)
+			go AlphaBetaRecursive(b,i,0, max_depth-1, -INFINITE_SCORE, -BaseAlpha)
+			b.UnMakeMove(m)
+		}
+		// restore base depth of board
+		b.BaseDepth--
+		// wait for all chunk evals to arrive or abort
+		ready:=false
+		for (!ready) && (!AbortSearch) {
+			ready=true
+			for i:=basei; i<=lasti; i++ {
+				eval:=-AlphaBetaEvals[i]
+				if eval==-INVALID_SCORE {
+					ready=false
+				} else {
+					// update BaseAlpha
+					if eval>BaseAlpha {
+						BaseAlpha=eval
+					}
+				}
+			}
+			if !ready {
+				time.Sleep(20 * time.Millisecond)
 			}
 		}
-		if !ready {
-			time.Sleep(50 * time.Millisecond)
+		// if aborted return invalid score
+		if AbortSearch {
+			return INVALID_SCORE
 		}
+		// store returned chunk evals in the node
+		for i:=basei; i<=lasti; i++ {
+			eval:=-AlphaBetaEvals[i]
+			node.Moves[i].Eval=eval
+		}
+		// to to next chunk
+		basei+=NumThreads
 	}
-	if AbortSearch {
-		return INVALID_SCORE
-	}
+	// sort the node
+	node.Sort()
+	// determine alpha, bestmove algeb and store evals and moves in the appropriate global variables
 	alpha:=-INFINITE_SCORE
 	for i:=0; i<l; i++ {
-		eval:=AlphaBetaEvals[i]
+		m:=node.Moves[i]
+		eval:=m.Eval
 		if eval>alpha {
-			alpha=AlphaBetaEvals[i]
-			BestMoveAlgeb=AlphaBetaMoves[i].ToAlgeb()
+			alpha=eval
+			BestMoveAlgeb=m.ToAlgeb()
 		}
-		node.Moves[i].Eval=eval
+		AlphaBetaEvals[i]=eval
+		AlphaBetaMoves[i]=m
 	}
-	node.Sort()
-	for i:=0; i<l; i++ {
-		AlphaBetaEvals[i]=node.Moves[i].Eval
-		AlphaBetaMoves[i]=node.Moves[i]
-	}
+	// store the sorted node in cache
+	Nodes[b.Pos]=node
+	// return alpha
 	return alpha
 }
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-// EvalNode : evaluate moves in the node belonging to board pos at depth
+// EvalNode : evaluate moves in the node belonging to board pos at depth and store in cache
 // -> b TBoard : board
 // -> depth int : depth
+// <- TNode : the evaluated node
 
-func (b TBoard) EvalNode(depth int) {
+func (b TBoard) EvalNode(depth int) TNode {
 	n:=b.Node()
 	for i,m := range n.Moves {
 		b.MakeMove(m)
-		n.Moves[i].Eval=-b.AlphaBeta(0)
+		n.Moves[i].Eval=-b.AlphaBeta(depth)
 		b.UnMakeMove(m)
 	}
 	n.Sort()
 	Nodes[b.Pos]=n
+	return n
 }
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-// Node : get the node belonging to the board position or create one
+// CreateNode : creates a node for a given board
 // -> b TBoard : board
-// <- TNode : node
+// <- TNode : created node
 
-func (b TBoard) Node() TNode {
-	if DoesNodeExist(b.Pos) {
-		return Nodes[b.Pos]
-	}
+func (b TBoard) CreateNode() TNode {
 	n:=TNode{}
 	b.InitMoveGen()
 	for b.NextLegalMove() {
@@ -903,6 +959,21 @@ func (b TBoard) Node() TNode {
 		m.Eval=INVALID_SCORE
 		n.Moves=append(n.Moves,m)
 	}
+	return n
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// Node : get the node belonging to the board from cache or create one and store it cache
+// -> b TBoard : board
+// <- TNode : node
+
+func (b TBoard) Node() TNode {
+	if DoesNodeExist(b.Pos) {
+		return Nodes[b.Pos]
+	}
+	n:=b.CreateNode()
 	Nodes[b.Pos]=n
 	return n
 }
@@ -933,16 +1004,23 @@ var mutex = &sync.Mutex{}
 // <- int : eval
 
 func (b TBoard) Eval() int {
-	// has to lock because random number generator is not thread safe
-	mutex.Lock()
-	r:=Rand.Intn(20)-10
+	// calculate eval from white's viewpoint by subtracting black's value from white's value
+	eval:=b.EvalCol(WHITE)-b.EvalCol(BLACK)
+	// generate random number in the -100 .. +100 range
+	mutex.Lock() // has to lock because random number generator is not thread safe
+	r:=Rand.Intn(200)-100
 	mutex.Unlock()
-	// add random number to eval
-	e:=b.EvalCol(WHITE)-b.EvalCol(BLACK)+r
-	if b.Pos.Turn==BLACK {
-		return e
+	// add some fraction of random number to eval
+	// the goal is to generate more cuts
+	// the correct value is determined by trial and error
+	// in the starting position dividing by 10 seems best
+	eval+=r/10
+	// if white's turn return eval
+	if b.Pos.Turn==WHITE {
+		return eval
 	}
-	return -e
+	// if black's turn return -eval, to reflect the evaluation from black's viewpoint
+	return -eval
 }
 
 ///////////////////////////////////////////////
@@ -1444,6 +1522,21 @@ func (b TBoard) ToPrintable() string {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// IsInt : determine if Token can be parse as int and is so parse it and store it in global variable I
+// <- bool : true = Token parsed as int ok, false = Token cannot be parsed as int
+
+func IsInt() bool {
+	i,err:=strconv.Atoi(Token)
+	if err==nil {
+		I=i
+		return true
+	}
+	return false
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // NextToken : reads the next token from scanner
 // <- bool : true = read successful, global var Token contains the token
 //         : false = read failed, global var Token is set to ""
@@ -1521,6 +1614,26 @@ func InterpretTestCommand() {
 	if Command=="r" {
 		G.SetFromFen(START_FEN)
 		G.Print()
+	}
+
+	if Command=="c" {
+		ClearBestMoves()
+	}
+
+	if Command=="e" {
+		depth:=1
+		if NextToken() && IsInt() {
+			depth=I
+		}
+		G.B.EvalNode(depth)
+		G.Print()
+	}
+
+	if Command=="n" {
+		NumThreads=MAX_MULTIPV
+		if NextToken() && IsInt() {
+			NumThreads=I
+		}
 	}
 
 	if Command=="d" {
@@ -1604,12 +1717,9 @@ setoption name <id> [value <x>]
 					if NextToken() {
 						if(Token=="value") {
 							if NextToken() {
-								value:=Token
-
 								if name=="MultiPV" {
-									i,err:=strconv.Atoi(value)
-									if err==nil {
-										MultiPV=i
+									if IsInt() {
+										MultiPV=I
 									}
 								}
 							}
@@ -1872,7 +1982,7 @@ func (g *TGame) AlphaBetaSearch() {
 			for i:=0; i<=(MultiPV-1); i++ {
 				if i<NumAlphaBetaMoves {
 					g.B.MakeMove(AlphaBetaMoves[i])
-					collectedpv:=g.B.CollectAlphaBetaPv(Depth)
+					collectedpv:=g.B.CollectAlphaBetaPv(Depth-1)
 					Eval=AlphaBetaEvals[i]
 					Pv=AlphaBetaMoves[i].ToAlgeb()
 					if collectedpv!="" {
@@ -1921,6 +2031,7 @@ func (g *TGame) MakeAlgebMove(algeb string) bool {
 func (g *TGame) SetFromFen(fen string) bool {
 	if g.B.SetFromFen(fen) {
 		g.Moves=TMoveList{}
+		ClearBestMoves()
 		return true
 	}
 	return false
