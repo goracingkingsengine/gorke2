@@ -2061,7 +2061,7 @@ func (g *TGame) AddNodeRecursive(b TBoard, depth int, max_depth int, ml TMoveLis
 		return false
 	}
 	if !DoesNodeExist(b.Pos) {
-		b.EvalNode((depth%2)+2)
+		b.EvalNode((depth%2)+3)
 		if TEST {
 			//fmt.Printf("added line %s\n",ml.ToPrintable())
 		}
@@ -2071,7 +2071,7 @@ func (g *TGame) AddNodeRecursive(b TBoard, depth int, max_depth int, ml TMoveLis
 	l:=len(node.Moves)
 	for i:=0; i<l; i++ {
 		m:=node.Moves[i]
-		moveok:=(i==(l-1))||(Rand.Intn(100)>60)
+		moveok:=(i==(l-1))||(Rand.Intn(100)>50)
 		if moveok {
 			b.MakeMove(m)
 			return g.AddNodeRecursive(b, depth+1, max_depth,append(ml,m))
@@ -2116,26 +2116,28 @@ func (g *TGame) RandomSearch() {
 
 	// add some random nodes to tree
 	for (Depth<=SearchDepth) && (!AbortSearch) {
-		for i:=0; (i<(2<<uint(Depth-1))) && (!AbortSearch); i++ {
-			g.AddNode(Depth)
-		}
+		for k:=0; (k<10) && (!AbortSearch); k++ {
+			for i:=0; (i<(2<<uint(Depth))) && (!AbortSearch); i++ {
+				g.AddNode(Depth)
+			}
 
-		g.MinimaxOut(Depth)
+			g.MinimaxOut(Depth)
 
-		node:=g.B.Node()
-		for i:=0; i<=(MultiPV-1); i++ {
-			if i<len(node.Moves) {
-				m:=node.Moves[i]
-				Pv=m.ToAlgeb()
-				g.B.MakeMove(m)
-				collectedpv:=g.CollectRandomPv(Depth-1)
-				if collectedpv!="" {
-					Pv+=" "+collectedpv
+			node:=g.B.Node()
+			for i:=0; i<=(MultiPV-1); i++ {
+				if i<len(node.Moves) {
+					m:=node.Moves[i]
+					Pv=m.ToAlgeb()
+					g.B.MakeMove(m)
+					collectedpv:=g.CollectRandomPv(Depth-1)
+					if collectedpv!="" {
+						Pv+=" "+collectedpv
+					}
+					g.B.UnMakeMove(m)
+					Eval=m.Eval
+					MultiPVIndex=i+1
+					SendUciInfo()
 				}
-				g.B.UnMakeMove(m)
-				Eval=m.Eval
-				MultiPVIndex=i+1
-				SendUciInfo()
 			}
 		}
 
