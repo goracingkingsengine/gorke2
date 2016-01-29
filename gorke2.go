@@ -123,6 +123,8 @@ const RESPONSE_TO_UCI_COMMAND=
 	"option name MultiPV type spin default 1 min 1 max 500\n"+
 	"uciok\n"
 
+const MAX_SEARCH_DEPTH=100
+
 ///////////////////////////////////////////////
 // constants defining a piece
 ///////////////////////////////////////////////
@@ -276,6 +278,8 @@ var SearchReady=false
 var StartingTime=time.Now().UTC()
 // nodes for alphabeta searc
 var SearchNodes=0
+// search depth
+var SearchDepth=0
 // depth
 var Depth=0
 // nps
@@ -923,15 +927,8 @@ func (b TBoard) AlphaBeta(max_depth int) int {
 // <- TNode : the evaluated node
 
 func (b TBoard) EvalNode(depth int) TNode {
-	n:=b.Node()
-	for i,m := range n.Moves {
-		b.MakeMove(m)
-		n.Moves[i].Eval=-b.AlphaBeta(depth)
-		b.UnMakeMove(m)
-	}
-	n.Sort()
-	Nodes[b.Pos]=n
-	return n
+	b.AlphaBeta(depth)
+	return b.Node()
 }
 
 ///////////////////////////////////////////////
@@ -1610,6 +1607,13 @@ func InterpretTestCommand() {
 		ClearBestMoves()
 	}
 
+	if Command=="a" {
+		AbortSearch=false
+		SearchDepth=MAX_SEARCH_DEPTH
+
+		go G.RandomSearch()
+	}
+
 	if Command=="e" {
 		depth:=1
 		if NextToken() && IsInt() {
@@ -1819,9 +1823,22 @@ go
 */
 
 	if Command=="go" {
-		AbortSearch=false
+		AbortSearch=false	
+		SearchDepth=MAX_SEARCH_DEPTH
 
-		go G.AlphaBetaSearch()
+		for NextToken() {
+			if Token=="depth" {
+				if NextToken() && IsInt() {
+					SearchDepth=I
+				}
+			}
+		}
+
+		if MultiPV<5 {
+			go G.AlphaBetaSearch()
+		} else {
+			go G.RandomSearch()
+		}
 	}
 
 /* from "Description of the universal chess interface (UCI)    April  2006":
@@ -1956,7 +1973,185 @@ func StartTimer() {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-// AlphaBetaSearch : perform alphabeta search
+// MinimaxOutRecursive : mimimax out recursive
+// -> g *TGame : game
+// -> b TBoard : board belonging to current position
+// -> depth int : depth
+// -> max_depth int : max depth
+// <- int : eval
+
+func (g *TGame) MinimaxOutRecursive(b TBoard, depth int, max_depth int) int {
+	if AbortSearch {
+		return INVALID_SCORE
+	}
+	if !DoesNodeExist(b.Pos) {
+		return INVALID_SCORE
+	}
+	if depth>max_depth {
+		return INVALID_SCORE
+	}
+	node:=b.Node()
+	l:=len(node.Moves)
+	if l<=0 {
+		return b.TerminalEval()
+	}
+	alpha:=-INFINITE_SCORE
+	for i,m := range node.Moves {
+		b.MakeMove(m)
+		eval:=-g.MinimaxOutRecursive(b, depth+1, max_depth)
+		if eval==-INVALID_SCORE {
+			eval=m.Eval
+		}
+		node.Moves[i].Eval=eval
+		if eval>alpha {
+			alpha=eval
+		}
+		b.UnMakeMove(m)
+	}
+	node.Sort()
+	Nodes[b.Pos]=node
+	return alpha
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// MinimaxOut : minimax out tree starting from game's board position
+// -> g *TGame : game
+
+func (g *TGame) MinimaxOut(max_depth int) {
+	g.MinimaxOutRecursive(g.B, 0, max_depth)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// CollectRandomPv : collect pv from tree starting from game's board position
+// -> g *TGame : game
+// -> depth int : depth
+// <- string : pv
+
+func (g *TGame) CollectRandomPv(depth int) string {
+	buff:=""
+	dummy:=g.B
+	for i:=0; (i<depth) && (len(dummy.Node().Moves)>0); i++ {
+		m:=dummy.Node().Moves[0]
+		if buff!=""	{
+			buff+=" "
+		}
+		buff+=m.ToAlgeb()
+		dummy.MakeMove(m)
+	}
+	return buff
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// AddNodeRecursive : add node recursively
+// -> g *TGame : game
+// -> b TBoard : board belonging to current node
+// -> depth int : depth
+// -> max_depth int : max depth
+// -> ml TMoveList : line
+// <- bool : true = node added ok, false = adding node failed
+
+func (g *TGame) AddNodeRecursive(b TBoard, depth int, max_depth int, ml TMoveList) bool {
+	if depth>max_depth {
+		return false
+	}
+	if !DoesNodeExist(b.Pos) {
+		b.EvalNode((depth%2)+2)
+		if TEST {
+			//fmt.Printf("added line %s\n",ml.ToPrintable())
+		}
+		return true
+	}
+	node:=b.Node()
+	l:=len(node.Moves)
+	for i:=0; i<l; i++ {
+		m:=node.Moves[i]
+		moveok:=(i==(l-1))||(Rand.Intn(100)>60)
+		if moveok {
+			b.MakeMove(m)
+			return g.AddNodeRecursive(b, depth+1, max_depth,append(ml,m))
+		}
+	}
+	// should not get here
+	return false
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// AddNode : add random node to tree starting from game's board position
+// -> g *TGame : game
+// -> max_depth int : max depth
+// <- bool : true = node added ok, false = failed to add node
+
+func (g *TGame) AddNode(max_depth int) bool {
+	return g.AddNodeRecursive(g.B,0,max_depth,TMoveList{})
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// RandomSearch : perform random search for game's board position
+// -> g *TGame : game
+
+func (g *TGame) RandomSearch() {
+	node:=g.B.Node()
+	if len(node.Moves)<=0 {
+		SearchReady=true
+		return
+	}
+	SearchReady=false
+	SearchNodes=0
+	g.B.BaseDepth=0
+	BestMoveAlgeb=""
+	Depth=1
+	StartTimer()
+
+	g.B.EvalNode(2)
+
+	// add some random nodes to tree
+	for (Depth<=SearchDepth) && (!AbortSearch) {
+		for i:=0; (i<(2<<uint(Depth-1))) && (!AbortSearch); i++ {
+			g.AddNode(Depth)
+		}
+
+		g.MinimaxOut(Depth)
+
+		node:=g.B.Node()
+		for i:=0; i<=(MultiPV-1); i++ {
+			if i<len(node.Moves) {
+				m:=node.Moves[i]
+				Pv=m.ToAlgeb()
+				g.B.MakeMove(m)
+				collectedpv:=g.CollectRandomPv(Depth-1)
+				if collectedpv!="" {
+					Pv+=" "+collectedpv
+				}
+				g.B.UnMakeMove(m)
+				Eval=m.Eval
+				MultiPVIndex=i+1
+				SendUciInfo()
+			}
+		}
+
+		Depth++
+	}
+
+	BestMoveAlgeb=g.B.Node().Moves[0].ToAlgeb()
+	SendBestMove()
+	SearchReady=true
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// AlphaBetaSearch : perform alphabeta search for game's board position
+// -> g *TGame : game
 
 func (g *TGame) AlphaBetaSearch() {
 	SearchReady=false
@@ -1966,7 +2161,7 @@ func (g *TGame) AlphaBetaSearch() {
 	Depth=1
 	StartTimer()
 
-	for !AbortSearch {
+	for (Depth<=SearchDepth) && (!AbortSearch) {
 		g.B.AlphaBeta(Depth)
 		if !AbortSearch {
 			for i:=0; i<=(MultiPV-1); i++ {
