@@ -1001,7 +1001,7 @@ func (b TBoard) Eval() int {
 	// the goal is to generate more cuts
 	// the correct value is determined by trial and error
 	// in the starting position dividing by 10 seems best
-	eval+=r/10
+	eval+=r/5
 	// if white's turn return eval
 	if b.Pos.Turn==WHITE {
 		return eval
@@ -1959,6 +1959,7 @@ func SendBestMove() {
 
 func SendUciInfo() {
 	Printu(UciInfo()+"\n")
+	Log(UciInfo()+"\n")
 }
 
 ///////////////////////////////////////////////
@@ -2034,13 +2035,15 @@ func (g *TGame) MinimaxOut(max_depth int) {
 func (g *TGame) CollectRandomPv(depth int) string {
 	buff:=""
 	dummy:=g.B
-	for i:=0; (i<depth) && (len(dummy.Node().Moves)>0); i++ {
+	exists:=DoesNodeExist(dummy.Pos)
+	for i:=0; exists && (i<depth) && (len(dummy.Node().Moves)>0); i++ {
 		m:=dummy.Node().Moves[0]
 		if buff!=""	{
 			buff+=" "
 		}
 		buff+=m.ToAlgeb()
 		dummy.MakeMove(m)
+		exists=DoesNodeExist(dummy.Pos)
 	}
 	return buff
 }
@@ -2071,7 +2074,7 @@ func (g *TGame) AddNodeRecursive(b TBoard, depth int, max_depth int, ml TMoveLis
 	l:=len(node.Moves)
 	for i:=0; i<l; i++ {
 		m:=node.Moves[i]
-		moveok:=(i==(l-1))||(Rand.Intn(100)>50)
+		moveok:=(i==(l-1))||(Rand.Intn(100)>10)
 		if moveok {
 			b.MakeMove(m)
 			return g.AddNodeRecursive(b, depth+1, max_depth,append(ml,m))
@@ -2116,8 +2119,8 @@ func (g *TGame) RandomSearch() {
 
 	// add some random nodes to tree
 	for (Depth<=SearchDepth) && (!AbortSearch) {
-		for k:=0; (k<(2<<uint(Depth))) && (!AbortSearch); k++ {
-			for i:=0; (i<5) && (!AbortSearch); i++ {
+		for k:=0; (k<Depth) && (!AbortSearch); k++ {
+			for i:=0; (i<Depth) && (!AbortSearch); i++ {
 				g.AddNode(Depth)
 			}
 
