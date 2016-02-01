@@ -68,6 +68,7 @@ type TMove struct {
 	CapPiece TPiece
 	Eval int
 	IsForwardKingMove bool
+	IsAlphaBetaBestMove bool
 }
 
 type TPosition struct {
@@ -121,6 +122,11 @@ const RESPONSE_TO_UCI_COMMAND=
 	"id author golang\n"+
 	"\n"+
 	"option name MultiPV type spin default 1 min 1 max 500\n"+
+	"option name MateSearch type check default true\n"+
+	"option name Randomness type spin default 10 min 0 max 100\n"+
+	"option name RandomSearch type check default false\n"+
+	"option name Branching type spin default 50 min 0 max 100\n"+
+	"option name ClearHash type button\n"+
 	"uciok\n"
 
 const MAX_SEARCH_DEPTH=100
@@ -226,12 +232,24 @@ const INDEX_OF_BLACK    = 0
 // global variables
 ///////////////////////////////////////////////
 
+// variables that can be set through the setoption command
+// perform mate search
+var MateSearch bool=true
+// perform random search
+var RandomSearch bool=false
+// randomness of eval
+var Randomness int=10
+// branching probability
+var Branching int=50
+
 // scanner for reading tokens from a string
 var Scanner scanner.Scanner
 // commandline read from stdin
 var Commandline string
 // token read from commandline
 var Token string
+// bool parsed from Token
+var B bool
 // int parsed from Token
 var I int
 // reader to read from stdin
@@ -779,41 +797,72 @@ func AlphaBetaRecursive(b TBoard,storei int,depth int, max_depth int, alpha int,
 		return eval
 	}
 	currentbest:=-INFINITE_SCORE
+	//ml:=b.CreateMoveList()
+	//mi:=0
 	for haslegal {
 		m:=b.CurrentMove
-		b.MakeMove(m)
-		eval:=-AlphaBetaRecursive(b,-1,depth+1,max_depth,-beta,-alpha)
-		b.UnMakeMove(m)
-		// test whether this is new best move
-		if eval>currentbest {
-			// new best move found
-			// make this eval the current best
-			currentbest=eval
-			// set move's eval
-			m.Eval=eval
-			// store as best move
-			// multithreaded, so setting common resource BestMoves requires lock
-			mutex.Lock()
-			BestMoves[b.Pos]=m
-			mutex.Unlock()
-		}
-		// update alpha
-		if eval>alpha {
-			alpha=eval
-		}
-		// test whether it is a cut
+		//m:=ml[mi]
+
 		effectivebeta:=beta
 		if depth==0 {
 			effectivebeta=-BaseAlpha
 		}
-		if alpha>effectivebeta {
-			// cut
-			if depth==0 {
-				AlphaBetaEvals[storei]=alpha
-			}
-			return alpha
+
+		var round=1
+		if max_depth>3 {
+			round=0
 		}
+		if MateSearch {
+			round=1
+		}
+		for ;round<2;round++ {
+			b.MakeMove(m)
+			eff_depth:=max_depth
+			if round==0 {
+				eff_depth=depth+1
+			}
+			eval:=-AlphaBetaRecursive(b,-1,depth+1,eff_depth,-beta,-alpha)
+			b.UnMakeMove(m)
+			if round==1 {
+				// test whether this is new best move
+				if eval>currentbest {
+					// new best move found
+					// make this eval the current best
+					currentbest=eval
+					// set move's eval
+					m.Eval=eval
+					// store as best move
+					// multithreaded, so setting common resource BestMoves requires lock
+					mutex.Lock()
+					BestMoves[b.Pos]=m
+					mutex.Unlock()
+				}
+				// update alpha
+				if eval>alpha {
+					alpha=eval
+				}
+			}
+			// test whether it is a cut
+			if eval>effectivebeta {
+				// cut
+				if depth==0 {
+					AlphaBetaEvals[storei]=eval
+				}
+				if round==0 {
+					m.Eval=eval
+					// store as best move
+					// multithreaded, so setting common resource BestMoves requires lock
+					mutex.Lock()
+					BestMoves[b.Pos]=m
+					mutex.Unlock()
+				}
+				return eval
+			}
+		}
+
 		haslegal=b.NextLegalMove()
+		//mi++
+		//haslegal=mi<len(ml)
 	}
 	if depth==0 {
 		AlphaBetaEvals[storei]=alpha
@@ -940,12 +989,7 @@ func (b TBoard) EvalNode(depth int) TNode {
 
 func (b TBoard) CreateNode() TNode {
 	n:=TNode{}
-	b.InitMoveGen()
-	for b.NextLegalMove() {
-		m:=b.CurrentMove
-		m.Eval=INVALID_SCORE
-		n.Moves=append(n.Moves,m)
-	}
+	n.Moves=b.CreateMoveList()
 	return n
 }
 
@@ -995,13 +1039,13 @@ func (b TBoard) Eval() int {
 	eval:=b.EvalCol(WHITE)-b.EvalCol(BLACK)
 	// generate random number in the -100 .. +100 range
 	mutex.Lock() // has to lock because random number generator is not thread safe
-	r:=Rand.Intn(200)-100
+	r:=Rand.Intn(2*Randomness+1)-Randomness
 	mutex.Unlock()
 	// add some fraction of random number to eval
 	// the goal is to generate more cuts
 	// the correct value is determined by trial and error
 	// in the starting position dividing by 10 seems best
-	eval+=r/5
+	eval+=r
 	// if white's turn return eval
 	if b.Pos.Turn==WHITE {
 		return eval
@@ -1093,12 +1137,12 @@ func (b *TBoard) NextPseudoLegalMove() bool {
 				b.CurrentPtr=md.NextVector
 			} else if c==NO_COLOR {
 				// empty
-				b.CurrentMove=TMove{b.CurrentSq,md.To,b.CurrentPiece,cp,0,false}
+				b.CurrentMove=TMove{b.CurrentSq,md.To,b.CurrentPiece,cp,0,false,false}
 				b.CurrentPtr++
 				return true
 			} else {
 				// capture
-				b.CurrentMove=TMove{b.CurrentSq,md.To,b.CurrentPiece,cp,0,false}
+				b.CurrentMove=TMove{b.CurrentSq,md.To,b.CurrentPiece,cp,0,false,false}
 				b.CurrentPtr=md.NextVector
 				return true
 			}
@@ -1324,6 +1368,7 @@ func (b *TBoard) NextLegalMove() bool {
 	if b.HasBestMove {
 		if !b.BestMoveDone {
 			b.CurrentMove=b.BestMove
+			b.CurrentMove.IsAlphaBetaBestMove=true
 			b.BestMoveDone=true
 			return true
 		}
@@ -1339,7 +1384,7 @@ func (b *TBoard) NextLegalMove() bool {
 			if b.BestMoveDone || (b.CurrentMove!=b.BestMove) {
 				// move is ok
 				if b.CurrentMove.Piece.Type()==KING {
-					if b.CurrentMove.To.Rank()>b.CurrentMove.From.Rank() {
+					if b.CurrentMove.To.Rank()<b.CurrentMove.From.Rank() {
 						b.CurrentMove.IsForwardKingMove=true
 					}
 				}
@@ -1509,7 +1554,26 @@ func (b TBoard) ToPrintable() string {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-// IsInt : determine if Token can be parse as int and is so parse it and store it in global variable I
+// IsBool : determine if Token can be parsed as bool and is so parse it and store it in global variable B
+// <- bool : true = Token parsed as bool ok, false = Token cannot be parsed as bool
+
+func IsBool() bool {
+	lToken:=strings.ToLower(Token)
+	if lToken=="true" {
+		B=true
+		return true
+	}
+	if lToken=="false" {
+		B=false
+		return true
+	}
+	return false
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// IsInt : determine if Token can be parsed as an int and is so parse it and store it in global variable I
 // <- bool : true = Token parsed as int ok, false = Token cannot be parsed as int
 
 func IsInt() bool {
@@ -1579,6 +1643,106 @@ f,err:=os.Create("log.txt")
 	} else {
 		f.Close()
 	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// ClearBestMoves : clear alphabeta best moves
+
+func ClearBestMoves() {
+	BestMoves=make(map[TPosition]TMove)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// ClearNodes : clear nodes
+
+func ClearNodes() {
+	Nodes=make(map[TPosition]TNode)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// ClearHash : clear hash
+
+func ClearHash() {
+	ClearBestMoves()
+	ClearNodes()
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// CalcTimeNps : calc time and nodes per second
+
+func CalcTimeNps() {
+	CurrentTime := time.Now().UTC()
+	Time=CurrentTime.Sub(StartingTime).Nanoseconds()/1e6
+	Nps=int64(0)
+	if(Time>0) {
+		Nps=int64(SearchNodes)*1e3/Time
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// CalcScore : determine uci score of Eval and store it in Score
+
+func CalcScore() {
+	if (Eval>(-MATE_LIMIT)) && (Eval<MATE_LIMIT) {
+		Score=fmt.Sprintf("score cp %d",Eval)
+		return
+	}
+	if Eval>0 {
+		Score=fmt.Sprintf("score mate %d",MATE_SCORE-Eval)
+		return
+	}
+	Score=fmt.Sprintf("score mate -%d",Eval+MATE_SCORE)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// UciInfo : determine uci info string
+// <- string : uci infor string
+
+func UciInfo() string {
+	CalcTimeNps()
+	CalcScore()
+	return fmt.Sprintf("info time %d depth %d multipv %d nodes %d nps %d %s pv %s",
+		Time,Depth,MultiPVIndex,SearchNodes,Nps,Score,Pv)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// SendBestMove : send best move
+
+func SendBestMove() {
+	Printu("bestmove "+BestMoveAlgeb+"\n")
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// SendUciInfo : calculate and send uci info
+
+func SendUciInfo() {
+	Printu(UciInfo()+"\n")
+	Log(UciInfo()+"\n")
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// StartTimer : start timer
+
+func StartTimer() {
+	StartingTime=time.Now().UTC()
 }
 
 ///////////////////////////////////////////////
@@ -1708,6 +1872,10 @@ setoption name <id> [value <x>]
 			if(Token=="name") {
 				if NextToken() {
 					name:=Token
+					if name=="ClearHash" {
+						ClearHash()
+						return
+					}
 					if NextToken() {
 						if(Token=="value") {
 							if NextToken() {
@@ -1716,6 +1884,26 @@ setoption name <id> [value <x>]
 										MultiPV=I
 									}
 								}
+								if name=="MateSearch" {
+									if IsBool() {
+										MateSearch=B
+									}
+								}
+								if name=="RandomSearch" {
+									if IsBool() {
+										RandomSearch=B
+									}
+								}
+								if name=="Randomness" {
+									if IsInt() {
+										Randomness=I
+									}
+								}
+								if name=="Branching" {
+									if IsInt() {
+										Branching=I
+									}
+								}								
 							}
 						}
 					}
@@ -1834,10 +2022,10 @@ go
 			}
 		}
 
-		if MultiPV<5 {
-			go G.AlphaBetaSearch()
-		} else {
+		if RandomSearch {
 			go G.RandomSearch()
+		} else {
+			go G.AlphaBetaSearch()
 		}
 	}
 
@@ -1861,6 +2049,62 @@ stop
 
 ///////////////////////////////////////////////
 // movelist functions
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// Sort : sort movelist for the purposes of move ordering
+// -> ml *TMoveList : move list
+
+func (ml *TMoveList) Sort() {
+	sort.Sort(ml)
+}
+
+func (ml *TMoveList) Len() int {
+	return len(*ml)
+}
+
+func (ml *TMoveList) Less(i,j int) bool {
+	if (*ml)[i].IsAlphaBetaBestMove {
+		return true
+	}
+	evalcomp:=(*ml)[i].Eval>(*ml)[j].Eval
+	if (*ml)[i].IsForwardKingMove && (*ml)[j].IsForwardKingMove {
+		return evalcomp
+	}
+	if (*ml)[i].IsForwardKingMove {
+		return true
+	}
+	if ((*ml)[i].CapPiece!=NO_PIECE) && ((*ml)[j].CapPiece!=NO_PIECE) {
+			return evalcomp
+	}
+	if ((*ml)[i].CapPiece!=NO_PIECE) {
+		return true
+	}
+	return evalcomp
+}
+
+func (ml *TMoveList) Swap(i,j int) {
+	(*ml)[i] , (*ml)[j] = (*ml)[j] , (*ml)[i]
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// CreateMoveList : creates movelist for a given board
+// -> b TBoard : board
+// <- TMoveList : created move list
+
+func (b TBoard) CreateMoveList() TMoveList {
+	ml:=TMoveList{}
+	b.InitMoveGen()
+	for b.NextLegalMove() {
+		m:=b.CurrentMove
+		m.Eval=INVALID_SCORE
+		ml=append(ml,m)
+	}
+	return ml
+}
+
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
@@ -1890,87 +2134,6 @@ func (ml TMoveList) ToPrintable() string {
 
 ///////////////////////////////////////////////
 // game functions
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-// ClearBestMoves : clear alphabeta best moves
-
-func ClearBestMoves() {
-	BestMoves=make(map[TPosition]TMove)
-}
-
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-// CalcTimeNps : calc time and nodes per second
-
-func CalcTimeNps() {
-	CurrentTime := time.Now().UTC()
-	Time=CurrentTime.Sub(StartingTime).Nanoseconds()/1e6
-	Nps=int64(0)
-	if(Time>0) {
-		Nps=int64(SearchNodes)*1e3/Time
-	}
-}
-
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-// CalcScore : determine uci score of Eval and store it in Score
-
-func CalcScore() {
-	if (Eval>(-MATE_LIMIT)) && (Eval<MATE_LIMIT) {
-		Score=fmt.Sprintf("score cp %d",Eval)
-		return
-	}
-	if Eval>0 {
-		Score=fmt.Sprintf("score mate %d",MATE_SCORE-Eval)
-		return
-	}
-	Score=fmt.Sprintf("score mate -%d",Eval+MATE_SCORE)
-}
-
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-// UciInfo : determine uci info string
-// <- string : uci infor string
-
-func UciInfo() string {
-	CalcTimeNps()
-	CalcScore()
-	return fmt.Sprintf("info time %d depth %d multipv %d nodes %d nps %d %s pv %s",
-		Time,Depth,MultiPVIndex,SearchNodes,Nps,Score,Pv)
-}
-
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-// SendBestMove : send best move
-
-func SendBestMove() {
-	Printu("bestmove "+BestMoveAlgeb+"\n")
-}
-
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-// SendUciInfo : calculate and send uci info
-
-func SendUciInfo() {
-	Printu(UciInfo()+"\n")
-	Log(UciInfo()+"\n")
-}
-
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-// StartTimer : start timer
-
-func StartTimer() {
-	StartingTime=time.Now().UTC()
-}
-
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
@@ -2074,7 +2237,7 @@ func (g *TGame) AddNodeRecursive(b TBoard, depth int, max_depth int, ml TMoveLis
 	l:=len(node.Moves)
 	for i:=0; i<l; i++ {
 		m:=node.Moves[i]
-		moveok:=(i==(l-1))||(Rand.Intn(100)>10)
+		moveok:=(i==(l-1))||(Rand.Intn(100)>=Branching)
 		if moveok {
 			b.MakeMove(m)
 			return g.AddNodeRecursive(b, depth+1, max_depth,append(ml,m))
