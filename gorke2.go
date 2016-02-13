@@ -127,6 +127,11 @@ const RESPONSE_TO_UCI_COMMAND=
 	"option name RandomSearch type check default false\n"+
 	"option name Branching type spin default 50 min 0 max 100\n"+
 	"option name ClearHash type button\n"+
+	"option name KingAdvanceValue type spin default 400 min 0 max 1000\n"+
+	"option name KnightValue type spin default 300 min 0 max 1000\n"+
+	"option name BishopValue type spin default 300 min 0 max 1000\n"+
+	"option name RookValue type spin default 500 min 0 max 1000\n"+
+	"option name QueenValue type spin default 700 min 0 max 1000\n"+
 	"uciok\n"
 
 const MAX_SEARCH_DEPTH=100
@@ -215,7 +220,7 @@ var PIECE_VALUES=map [TPieceType]int{
 	BISHOP : 300,
 	KNIGHT : 300}
 
-const KING_ADVANCE_VALUE = 400
+var KING_ADVANCE_VALUE = 400
 
 const INDEX_OF_WHITE    = 1
 const INDEX_OF_BLACK    = 0
@@ -1424,7 +1429,7 @@ func (b TBoard) PieceAtSq(sq TSquare) TPiece {
 // -> b TBoard : board
 // <-  : 
 
-func (b TBoard) CalcMaterial() {
+func (b *TBoard) CalcMaterial() {
 	b.Material[INDEX_OF_WHITE]=0
 	b.Material[INDEX_OF_BLACK]=0
 	for sq:=0; sq<BOARD_SIZE; sq++ {
@@ -1903,7 +1908,32 @@ setoption name <id> [value <x>]
 									if IsInt() {
 										Branching=I
 									}
-								}								
+								}
+								if name=="KingAdvanceValue" {
+									if IsInt() {
+										KING_ADVANCE_VALUE=I
+									}
+								}
+								if name=="KnightValue" {
+									if IsInt() {
+										PIECE_VALUES[KNIGHT]=I
+									}
+								}
+								if name=="BishopValue" {
+									if IsInt() {
+										PIECE_VALUES[BISHOP]=I
+									}
+								}
+								if name=="RookValue" {
+									if IsInt() {
+										PIECE_VALUES[ROOK]=I
+									}
+								}
+								if name=="QueenValue" {
+									if IsInt() {
+										PIECE_VALUES[QUEEN]=I
+									}
+								}
 							}
 						}
 					}
@@ -2307,6 +2337,7 @@ func (g *TGame) RandomSearch() {
 			}
 		}
 
+		ClearBestMoves()
 		Depth++
 	}
 
