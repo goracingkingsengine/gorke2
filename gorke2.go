@@ -132,6 +132,8 @@ const RESPONSE_TO_UCI_COMMAND=
 	"option name BishopValue type spin default 300 min 0 max 1000\n"+
 	"option name RookValue type spin default 500 min 0 max 1000\n"+
 	"option name QueenValue type spin default 700 min 0 max 1000\n"+
+	"option name PruneThresold type spin default 3 min 0 max 10\n"+
+	"option name PruneDepth type spin default 1 min 0 max 10\n"+
 	"uciok\n"
 
 const MAX_SEARCH_DEPTH=100
@@ -246,6 +248,10 @@ var RandomSearch bool=false
 var Randomness int=10
 // branching probability
 var Branching int=50
+// pruning thresold
+var PruneThresold int=3
+// pruning depth
+var PruneDepth int=1
 
 // scanner for reading tokens from a string
 var Scanner scanner.Scanner
@@ -814,7 +820,7 @@ func AlphaBetaRecursive(b TBoard,storei int,depth int, max_depth int, alpha int,
 		}
 
 		var round=1
-		if max_depth>3 {
+		if max_depth>PruneThresold {
 			round=0
 		}
 		if MateSearch {
@@ -824,7 +830,7 @@ func AlphaBetaRecursive(b TBoard,storei int,depth int, max_depth int, alpha int,
 			b.MakeMove(m)
 			eff_depth:=max_depth
 			if round==0 {
-				eff_depth=depth+1
+				eff_depth=depth+PruneDepth
 			}
 			eval:=-AlphaBetaRecursive(b,-1,depth+1,eff_depth,-beta,-alpha)
 			b.UnMakeMove(m)
@@ -1932,6 +1938,16 @@ setoption name <id> [value <x>]
 								if name=="QueenValue" {
 									if IsInt() {
 										PIECE_VALUES[QUEEN]=I
+									}
+								}
+								if name=="PruneThresold" {
+									if IsInt() {
+										PruneThresold=I
+									}
+								}
+								if name=="PruneDepth" {
+									if IsInt() {
+										PruneDepth=I
 									}
 								}
 							}
