@@ -132,6 +132,8 @@ const RESPONSE_TO_UCI_COMMAND=
 	"option name BishopValue type spin default 300 min 0 max 1000\n"+
 	"option name RookValue type spin default 500 min 0 max 1000\n"+
 	"option name QueenValue type spin default 700 min 0 max 1000\n"+
+	"option name RandomDepthOdd type spin default 3 min 0 max 10\n"+
+	"option name RandomDepthEven type spin default 4 min 0 max 10\n"+
 	"option name PruneThresoldLow type spin default 0 min 0 max 10\n"+
 	"option name PruneThresoldHigh type spin default 10 min 0 max 10\n"+
 	"option name PruneFromDepth type spin default 4 min 0 max 10\n"+
@@ -258,6 +260,10 @@ var PruneThresoldHigh int=10
 var PruneFromDepth int=4
 // pruning depth
 var PruneDepth int=1
+// radnom depth odd
+var RandomDepthOdd int=3
+// radnom depth even
+var RandomDepthEven int=4
 
 // scanner for reading tokens from a string
 var Scanner scanner.Scanner
@@ -1949,6 +1955,16 @@ setoption name <id> [value <x>]
 										PIECE_VALUES[QUEEN]=I
 									}
 								}
+								if name=="RandomDepthOdd" {
+									if IsInt() {
+										RandomDepthOdd=I
+									}
+								}
+								if name=="RandomDepthEven" {
+									if IsInt() {
+										RandomDepthEven=I
+									}
+								}
 								if name=="PruneThresoldLow" {
 									if IsInt() {
 										PruneThresoldLow=I
@@ -2292,7 +2308,11 @@ func (g *TGame) AddNodeRecursive(b TBoard, depth int, max_depth int, ml TMoveLis
 		return false
 	}
 	if !DoesNodeExist(b.Pos) {
-		b.EvalNode((depth%2)+3)
+		if((depth%2)==0){
+			b.EvalNode(RandomDepthEven)
+		} else {
+			b.EvalNode(RandomDepthOdd)
+		}
 		if TEST {
 			//fmt.Printf("added line %s\n",ml.ToPrintable())
 		}
